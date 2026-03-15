@@ -1,0 +1,22 @@
+# Downloaded PDFs — run `python knowledge_base/scripts/download_docs.py` to populate
+knowledge_base/raw_pdfs/
+
+# Environment
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Qdrant local storage
+qdrant_storage/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
