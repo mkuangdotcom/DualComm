@@ -35,7 +35,6 @@ def create_runtime_backend() -> AgentRuntime:
     if backend == "llamaindex":
         return LlamaIndexRuntime(
             model_name=settings.llamaindex_model,
-            documents_dir=settings.llamaindex_docs_dir,
         )
 
     if backend == "hybrid":
@@ -46,7 +45,6 @@ def create_runtime_backend() -> AgentRuntime:
         )
         llamaindex_runtime = LlamaIndexRuntime(
             model_name=settings.llamaindex_model,
-            documents_dir=settings.llamaindex_docs_dir,
         )
         return HybridRuntime(
             agent_runtime=langchain_runtime,

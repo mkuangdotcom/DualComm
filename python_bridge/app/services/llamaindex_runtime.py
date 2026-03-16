@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import importlib
-from pathlib import Path
-import re
 from typing import Any, Dict, List, Optional
 
 from app.services.utils import (
@@ -11,14 +8,13 @@ from app.services.utils import (
     derive_sender_name,
     placeholder_response,
 )
+from rag.retriever import retrieve as qdrant_retrieve
 
 
 class LlamaIndexRuntime:
     """
-    LlamaIndex-ready runtime adapter scaffold for the messaging Python bridge.
-
-    This class mirrors the LangChain scaffold but keeps the integration points
-    tailored to a future LlamaIndex pipeline (indexes, retrievers, and agents).
+    LlamaIndex runtime adapter that uses the Qdrant RAG retriever
+    for context retrieval in the messaging Python bridge.
     """
 
     def __init__(
@@ -26,15 +22,15 @@ class LlamaIndexRuntime:
         *,
         model_name: Optional[str] = None,
         system_prompt: Optional[str] = None,
-        documents_dir: Optional[str] = None,
+        score_threshold: float = 0.3,
+        category: Optional[str] = None,
     ) -> None:
         self.model_name = model_name or "unset"
         self.system_prompt = system_prompt or (
             "You are a helpful assistant connected to WhatsApp."
         )
-        self.documents_dir = Path(documents_dir or "./docs/rag/malay")
-        self._documents_cache: Optional[List[str]] = None
-        self._init_error: Optional[str] = None
+        self.score_threshold = score_threshold
+        self.category = category
 
     async def handle_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         message = payload.get("message", {}) or {}
@@ -79,105 +75,44 @@ class LlamaIndexRuntime:
                 "handled_message_type": message_type,
                 "llamaindex_status": retrieval.get("status", "no_context"),
                 "llamaindex_context_count": len(retrieval.get("chunks", [])),
-                "llamaindex_error": retrieval.get("error") or self._init_error,
+                "llamaindex_error": retrieval.get("error"),
             },
         }
 
     async def retrieve_context(self, query_text: str, top_k: int = 3) -> Dict[str, Any]:
-        docs = self._load_documents()
+        result = qdrant_retrieve(
+            query=query_text,
+            top_k=top_k,
+            category=self.category,
+            score_threshold=self.score_threshold,
+        )
 
-        if not docs:
-            return {
-                "status": "no_documents",
-                "chunks": [],
-                "error": self._init_error,
-            }
+        status = result.get("status", "error")
+        error = result.get("error")
+        raw_chunks: List[dict] = result.get("chunks", [])
 
-        query_tokens = self._tokenize(query_text)
-        if not query_tokens:
-            return {
-                "status": "empty_query",
-                "chunks": [],
-                "error": None,
-            }
+        plain_chunks: List[str] = []
+        for chunk in raw_chunks:
+            text = chunk.get("text", "").strip()
+            source = chunk.get("source", "")
+            category = chunk.get("category", "")
+            score = chunk.get("score", "")
 
-        scored: List[tuple[int, str]] = []
-        for chunk in docs:
-            chunk_tokens = self._tokenize(chunk)
-            overlap = len(query_tokens.intersection(chunk_tokens))
-            if overlap > 0:
-                scored.append((overlap, chunk))
+            parts = [text]
+            tags = []
+            if source:
+                tags.append(f"source: {source}")
+            if category:
+                tags.append(f"category: {category}")
+            if score:
+                tags.append(f"score: {score}")
+            if tags:
+                parts.append(f"[{', '.join(tags)}]")
 
-        if not scored:
-            return {
-                "status": "no_match",
-                "chunks": [],
-                "error": None,
-            }
+            plain_chunks.append("\n".join(parts))
 
-        scored.sort(key=lambda item: item[0], reverse=True)
-        selected = [self._shorten(text) for _, text in scored[: max(top_k, 1)]]
         return {
-            "status": "ok",
-            "chunks": selected,
-            "error": None,
+            "status": status,
+            "chunks": plain_chunks,
+            "error": error,
         }
-
-    def _load_documents(self) -> List[str]:
-        if self._documents_cache is not None:
-            return self._documents_cache
-
-        if not self.documents_dir.exists():
-            self._documents_cache = []
-            self._init_error = f"LlamaIndex docs directory not found: {self.documents_dir}"
-            return self._documents_cache
-
-        # Prefer LlamaIndex loader when available so this runtime stays aligned
-        # with the intended retrieval stack.
-        try:
-            core_module = importlib.import_module("llama_index.core")
-            reader_cls = getattr(core_module, "SimpleDirectoryReader")
-            documents = reader_cls(
-                input_dir=str(self.documents_dir),
-                recursive=True,
-            ).load_data()
-
-            self._documents_cache = [
-                (getattr(doc, "text", "") or "").strip()
-                for doc in documents
-                if (getattr(doc, "text", "") or "").strip()
-            ]
-            return self._documents_cache
-        except Exception as exc:
-            self._init_error = str(exc)
-
-        # Fallback file loader keeps retrieval alive when llama_index is missing
-        # or cannot parse a specific file format.
-        loaded: List[str] = []
-        for file_path in self.documents_dir.rglob("*"):
-            if not file_path.is_file():
-                continue
-            if file_path.suffix.lower() not in {".txt", ".md"}:
-                continue
-            try:
-                text = file_path.read_text(encoding="utf-8", errors="ignore").strip()
-                if text:
-                    loaded.append(text)
-            except OSError:
-                continue
-
-        self._documents_cache = loaded
-        return self._documents_cache
-
-    @staticmethod
-    def _tokenize(text: str) -> set[str]:
-        tokens = re.findall(r"[A-Za-z0-9_]+", (text or "").lower())
-        return set(tokens)
-
-    @staticmethod
-    def _shorten(text: str, limit: int = 500) -> str:
-        if len(text) <= limit:
-            return text
-        return f"{text[:limit].rstrip()}..."
-
-
