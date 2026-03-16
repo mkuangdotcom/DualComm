@@ -128,6 +128,9 @@ class HybridRuntime:
                 "rag_status": retrieval.get("status", "unknown"),
                 "rag_context_count": len(context_chunks),
                 "rag_error": retrieval.get("error"),
+                "rag_top_k": self.rag_top_k,
+                "rag_score_threshold": self.rag_runtime.score_threshold,
+                "rag_category": self.rag_runtime.category,
             }
         )
         result["metadata"] = metadata

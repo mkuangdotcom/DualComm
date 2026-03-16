@@ -86,6 +86,26 @@ class Settings(BaseSettings):
         default=None,
         alias="LLAMAINDEX_MODEL",
     )
+    llamaindex_system_prompt: Optional[str] = Field(
+        default=None,
+        alias="LLAMAINDEX_SYSTEM_PROMPT",
+    )
+    llamaindex_timeout_seconds: float = Field(
+        default=25.0,
+        alias="LLAMAINDEX_TIMEOUT_SECONDS",
+    )
+    llamaindex_top_k: int = Field(
+        default=3,
+        alias="LLAMAINDEX_TOP_K",
+    )
+    llamaindex_score_threshold: float = Field(
+        default=0.3,
+        alias="LLAMAINDEX_SCORE_THRESHOLD",
+    )
+    llamaindex_category: Optional[str] = Field(
+        default=None,
+        alias="LLAMAINDEX_CATEGORY",
+    )
     llamaindex_docs_dir: str = Field(
         default="./docs/rag/malay",
         alias="LLAMAINDEX_DOCS_DIR",
@@ -97,6 +117,14 @@ class Settings(BaseSettings):
     hybrid_rag_top_k: int = Field(
         default=3,
         alias="HYBRID_RAG_TOP_K",
+    )
+    hybrid_rag_score_threshold: Optional[float] = Field(
+        default=None,
+        alias="HYBRID_RAG_SCORE_THRESHOLD",
+    )
+    hybrid_rag_category: Optional[str] = Field(
+        default=None,
+        alias="HYBRID_RAG_CATEGORY",
     )
 
     def is_api_key_required(self) -> bool:

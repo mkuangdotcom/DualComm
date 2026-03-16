@@ -35,9 +35,21 @@ def create_runtime_backend() -> AgentRuntime:
     if backend == "llamaindex":
         return LlamaIndexRuntime(
             model_name=settings.llamaindex_model,
+            system_prompt=settings.llamaindex_system_prompt or settings.default_system_prompt,
+            timeout_seconds=settings.llamaindex_timeout_seconds,
+            rag_top_k=settings.llamaindex_top_k,
+            score_threshold=settings.llamaindex_score_threshold,
+            category=settings.llamaindex_category,
         )
 
     if backend == "hybrid":
+        hybrid_score_threshold = (
+            settings.hybrid_rag_score_threshold
+            if settings.hybrid_rag_score_threshold is not None
+            else settings.llamaindex_score_threshold
+        )
+        hybrid_category = settings.hybrid_rag_category or settings.llamaindex_category
+
         langchain_runtime = LangChainRuntime(
             model_name=settings.langchain_model,
             system_prompt=settings.default_system_prompt,
@@ -45,6 +57,11 @@ def create_runtime_backend() -> AgentRuntime:
         )
         llamaindex_runtime = LlamaIndexRuntime(
             model_name=settings.llamaindex_model,
+            system_prompt=settings.llamaindex_system_prompt or settings.default_system_prompt,
+            timeout_seconds=settings.llamaindex_timeout_seconds,
+            rag_top_k=settings.hybrid_rag_top_k,
+            score_threshold=hybrid_score_threshold,
+            category=hybrid_category,
         )
         return HybridRuntime(
             agent_runtime=langchain_runtime,
