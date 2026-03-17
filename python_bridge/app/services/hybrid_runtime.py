@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from app.services.langchain_runtime import LangChainRuntime
 from app.services.llamaindex_runtime import LlamaIndexRuntime
 from app.services.stt_service import STTService
+from app.services.advocacy_service import AdvocacyService
 from app.services.utils import parse_model_spec
 from app.settings import get_settings
 
@@ -49,6 +50,10 @@ class HybridRuntime:
         self.stt_service = STTService(
             api_key=os.getenv("GROQ_API_KEY") or get_settings().groq_api_key
         )
+        self.advocacy_service = AdvocacyService(
+            groq_api_key=os.getenv("GROQ_API_KEY") or get_settings().groq_api_key
+        )
+        self.advocacy_sessions: Dict[str, Any] = {}
 
     async def handle_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         source_message = payload.get("message", {}) or {}
@@ -93,6 +98,11 @@ class HybridRuntime:
                 original_text
             )
 
+        # ── Advocacy Layer: check for sector triggers ───────────────
+        advocacy_response = await self._maybe_handle_advocacy(original_text, payload)
+        if advocacy_response:
+            return advocacy_response
+
         # ── RAG retrieval (Malay query → Malay docs) ────────────────
         retrieval = await self.rag_runtime.retrieve_context(
             translated_query,
@@ -101,16 +111,18 @@ class HybridRuntime:
         context_chunks = retrieval.get("chunks", [])
 
         # ── Compose agent input ─────────────────────────────────────
-        augmented_payload = deepcopy(payload)
-        augmented_message = augmented_payload.get("message", {}) or {}
-        augmented_message["text"] = self._compose_agent_input(
+        agent_input = self._compose_agent_input(
             original_text=original_text,
             translated_query=translated_query,
             retrieved_chunks=context_chunks,
             target_language=self.target_language,
             user_language=user_language,
         )
-        augmented_payload["message"] = augmented_message
+
+        augmented_payload = deepcopy(payload)
+        if "message" not in augmented_payload:
+            augmented_payload["message"] = {}
+        augmented_payload["message"]["text"] = agent_input
 
         result = await self.agent_runtime.handle_message(augmented_payload)
 
@@ -195,26 +207,18 @@ class HybridRuntime:
     ) -> str:
         context_block = "\n\n".join(retrieved_chunks) if retrieved_chunks else "(No relevant context found.)"
 
-        # Determine reply language
-        if user_language:
-            lang_instruction = (
-                f"The user spoke in {user_language}. "
-                f"You MUST reply in {user_language}."
-            )
-        else:
-            lang_instruction = (
-                "Reply in the same language as the original user message."
-            )
+        # Reply language is STICKY to Malay per user request
+        lang_instruction = "You MUST reply ONLY in Malay, regardless of the user's input language or dialect (Cantonese, Javanese, etc.)."
 
         return (
-            "Use the following information to answer the user accurately.\n\n"
+            "You are DualComm, a helpful assistant. Use the following information to answer accurately.\n\n"
             f"Original user message:\n{original_text or '(empty)'}\n\n"
             f"Translated query in {target_language} (for context retrieval only):\n{translated_query or '(empty)'}\n\n"
-            f"Retrieved {target_language} context:\n{context_block}\n\n"
+            f"Retrieved {target_language} context (Source of truth):\n{context_block}\n\n"
             "Response rules:\n"
             f"1. {lang_instruction}\n"
             "2. Use retrieved context if relevant and factual.\n"
-            "3. If context is insufficient, say what is missing briefly."
+            "3. If context is insufficient, explain what is missing in the user's language."
         )
 
     async def _translate_to_target_language(self, text: str) -> tuple[str, str]:
@@ -294,3 +298,84 @@ class HybridRuntime:
             top_p=1,
             api_key=groq_api_key,
         )
+
+    async def _maybe_handle_advocacy(self, text: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """If the text is an advocacy trigger or a confirmation, handle it."""
+        if not text:
+            return None
+
+        t = text.lower().strip()
+        chat_id = payload.get("message", {}).get("chatId", "default")
+        session = self.advocacy_sessions.get(chat_id)
+
+        # 1. Confirmation Step (1 for Yes, 2 for No)
+        if session and session.get("status") == "draft_ready":
+            if t == "1":
+                self.advocacy_service.execute_send(session)
+                self.advocacy_sessions.pop(chat_id, None)
+                return {
+                    "actions": [{"type": "send_text", "text": "✅ *Berjaya!* Aduan anda telah dihantar secara rasmi ke jabatan berkaitan. Terima kasih."}],
+                    "metadata": {"source": "advocacy_sent"}
+                }
+            elif t == "2":
+                self.advocacy_sessions.pop(chat_id, None)
+                return {
+                    "actions": [{"type": "send_text", "text": "❌ *Dibatalkan.* Draf aduan telah dipadamkan."}],
+                    "metadata": {"source": "advocacy_cancelled"}
+                }
+            # If they type something else, we let it flow to AI or re-prompt if it looks like they are trying to answer.
+            # But let's stay in confirmation mode if it's just a short text.
+            if len(t) < 3:
+                return {
+                    "actions": [{"type": "send_text", "text": "Sila taip *1* untuk hantar atau *2* untuk batal."}],
+                    "metadata": {"source": "advocacy_reprompt"}
+                }
+
+        # 2. Strict Menu Trigger
+        # Clean text from common punctuation to be robust
+        clean_text = t.strip(" .!?")
+        if clean_text in ["email", "emel"]:
+            self.advocacy_sessions.pop(chat_id, None) # Clear any old session
+            return {
+                "actions": [{"type": "send_text", "text": self.advocacy_service.get_menu()}],
+                "metadata": {"source": "advocacy_menu"}
+            }
+
+        # 3. Sector Selection (1-4)
+        if t in ["1", "2", "3", "4"]:
+            sector_map = {"1": "jtk", "2": "jkm", "3": "kkm", "4": "jpn"}
+            sector = sector_map[t]
+            self.advocacy_sessions[chat_id] = {"status": "selecting_details", "sector": sector}
+            return {
+                "actions": [{"type": "send_text", "text": "Boleh berikan nama dan jawatan anda?"}],
+                "metadata": {"source": "advocacy_ask_info", "sector": sector}
+            }
+
+        # 4. Continuation Logic
+        if session:
+            sector = session.get("sector", "kkm")
+            result = await self.advocacy_service.generate_draft(sector, text)
+            
+            if result.get("status") == "draft_ready":
+                self.advocacy_sessions[chat_id] = result 
+                return self._format_advocacy_response(result, sector)
+            else:
+                return {
+                    "actions": [{"type": "send_text", "text": result["text"]}],
+                    "metadata": {"source": "advocacy_missing_info", "sector": sector}
+                }
+
+        return None
+
+    def _format_advocacy_response(self, result: Dict[str, Any], sector: str) -> Dict[str, Any]:
+        actions = [{"type": "send_text", "text": result["text"]}]
+        for path in result.get("attachments", []):
+            actions.append({
+                "type": "send_document",
+                "storagePath": path,
+                "fileName": Path(path).name
+            })
+        return {
+            "actions": actions,
+            "metadata": {"source": "advocacy_flow", "sector": sector}
+        }

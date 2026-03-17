@@ -40,5 +40,7 @@ python-telegram-bot>=21.0
 # Shared utility
 python-dotenv>=1.0,<2.0
 
-# Optional external integration
-# agentmail -- install separately: pip install agentmail
+# Advocacy & MCP (Required for Government Advocacy)
+resend
+fpdf2
+mcp
