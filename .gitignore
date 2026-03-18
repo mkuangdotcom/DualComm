@@ -27,3 +27,7 @@ qdrant_storage/
 
 # Logs
 *.log
+
+.hf_cache/
+dist/
+node_modules/
