@@ -14,7 +14,6 @@ __pycache__/
 # Session / Staging
 auth_info_baileys/
 media_staging/
-mcp_agent/
 
 # Qdrant local storage
 qdrant_storage/
