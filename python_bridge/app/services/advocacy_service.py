@@ -277,8 +277,36 @@ class AdvocacyService:
         if t.strip() == "4": return "jpn"
         return "kkm"
 
-    def get_menu(self) -> str:
-        return (
+    async def translate_text(self, text: str, user_language_context: str) -> str:
+        """Translates an arbitrary string into the user's language based on their original text context."""
+        if not user_language_context or user_language_context.lower() in ["malay", "bahasa melayu", "1", "2", "3", "4"]:
+            return text
+            
+        try:
+            prompt = (
+                "You are a strict translation engine. Your ONLY job is to translate the provided system message into the exact language/dialect used by the user in the context snippet.\n"
+                f"User's Language Context Snippet: '{user_language_context}'\n\n"
+                "CRITICAL RULES:\n"
+                "1. DO NOT add conversational filler, greetings, or menus.\n"
+                "2. DO NOT answer the user's question.\n"
+                "3. Translate EXACTLY the system message provided and NOTHING ELSE.\n"
+                "4. Maintain all emojis and formatting exactly.\n"
+                "5. Return ONLY the translated text."
+            )
+            res = self.groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": text}
+                ],
+                temperature=0.3
+            )
+            return res.choices[0].message.content.strip()
+        except Exception:
+            return text
+
+    async def get_menu(self, user_language_context: str = "Malay") -> str:
+        base_menu = (
             "🇲🇾 *Sistem Advokasi Kerajaan DualComm*\n\n"
             "Sila pilih sektor aduan untuk memulakan advokasi rasmi:\n\n"
             "1️⃣ *Sektor Buruh & Pekerjaan (JTK)*\n"
@@ -287,6 +315,11 @@ class AdvocacyService:
             "4️⃣ *Sektor Pendaftaran Negara (JPN)*\n\n"
             "*PENTING*: Sila taip nombor sektor (1-4)."
         )
+        return await self.translate_text(base_menu, user_language_context)
+
+    async def get_info_request(self, user_language_context: str = "Malay") -> str:
+        base_msg = "Boleh berikan nama dan jawatan anda?"
+        return await self.translate_text(base_msg, user_language_context)
 
     async def generate_draft(self, sector: str, user_text: str) -> Dict[str, Any]:
         """Generates the documents and email draft but DOES NOT send the email."""
@@ -339,10 +372,14 @@ class AdvocacyService:
                 f"2️⃣ *Tidak, batalkan*\n\n"
                 f"_Sila taip 1 atau 2._"
             )
+            
+            # Pass original user text to allow LLM to translate the draft prompt
+            user_lang_context = user_text # we pass the actual info text as context
+            draft_msg_translated = await self.translate_text(draft_msg, user_lang_context)
 
             return {
                 "status": "draft_ready",
-                "text": draft_msg,
+                "text": draft_msg_translated,
                 "attachments": [str(pdf_path), str(csv_path)],
                 "keputusan": keputusan,
                 "sector": sector,
@@ -385,6 +422,7 @@ Anda adalah sistem advokasi kerajaan Malaysia.
 {arahan_tambahan}
 
 Ekstrak Nama & Jawatan pengirim daripada input. Letakkan dlm "nama_pengirim_dikesan" & "jawatan_pengirim_dikesan".
+AMARAN KERAS: Semua teks dalam JSON MESTI huruf RUMI (Latin alphabets) dan bahasa Melayu. JANGAN guna tulisan Cina, Jawi, Arab, atau karakter pelik. Jika input ada "阿華", tukar ke "Ah Wah".
 
 JSON output TEPAT:
 {{
@@ -416,6 +454,15 @@ JSON output TEPAT:
 }}
 """
 
+    def sanitize_fpdf(self, text: Any) -> str:
+        """Strips non-latin-1 characters completely to prevent FPDF crash"""
+        if not text: return ""
+        try:
+            sanitized = str(text).encode('latin-1', 'ignore').decode('latin-1')
+            return sanitized.replace('\u2018', "'").replace('\u2019', "'").replace('\u201c', '"').replace('\u201d', '"')
+        except:
+            return ""
+
     def _bina_pdf(self, data: Dict[str, Any], sektor: str, path: str, nama_pengirim: str, jawatan_pengirim: str):
         cfg = SEKTOR[sektor]
         globals()["_NAMA_HEADER_PDF"] = nama_pengirim
@@ -436,7 +483,6 @@ JSON output TEPAT:
         pdf.cell(35, 6, "Tarikh        :", align="R"); pdf.cell(0, 6, f"  {tarikh_str}"); pdf.ln(10)
 
         pdf.set_font("Helvetica", "", 11)
-        # Fix: using direct access for clarity
         items_penerima = [
             data.get("gelaran_penerima") or cfg.get("gelaran"),
             cfg.get("org"),
@@ -447,7 +493,7 @@ JSON output TEPAT:
         for line in items_penerima:
             if line:
                 pdf.set_x(20)
-                pdf.cell(0, 6, str(line))
+                pdf.cell(0, 6, self.sanitize_fpdf(line))
                 pdf.ln(6)
         pdf.ln(6)
 
@@ -455,7 +501,7 @@ JSON output TEPAT:
 
         pdf.set_font("Helvetica", "B", 11)
         tajuk = data.get("title") or data.get("tajuk_surat") or "ADUAN"
-        pdf.set_x(20); pdf.multi_cell(170, 7, str(tajuk).upper(), align="C"); pdf.ln(3)
+        pdf.set_x(20); pdf.multi_cell(170, 7, self.sanitize_fpdf(tajuk).upper(), align="C"); pdf.ln(3)
         pdf.set_line_width(0.3); pdf.line(20, pdf.get_y(), 190, pdf.get_y()); pdf.ln(8)
 
         perenggan = data.get("paragraphs")
@@ -467,14 +513,14 @@ JSON output TEPAT:
             pdf.set_font("Helvetica", "", 11)
             if idx == 0:
                 pdf.set_x(20)
-                pdf.multi_cell(170, 6, str(para), align="J")
+                pdf.multi_cell(170, 6, self.sanitize_fpdf(para), align="J")
             else:
                 if pdf.get_y() > (had_bawah - 20): pdf.add_page()
                 y = pdf.get_y()
                 pdf.set_x(20)
                 pdf.cell(12, 6, f"{idx+1}.")
                 pdf.set_xy(32, y)
-                pdf.multi_cell(158, 6, str(para), align="J")
+                pdf.multi_cell(158, 6, self.sanitize_fpdf(para), align="J")
             pdf.ln(4)
 
         sections = data.get("additional_sections")
@@ -482,11 +528,11 @@ JSON output TEPAT:
             for sek in sections:
                 if pdf.get_y() > (had_bawah - 30): pdf.add_page()
                 h = sek.get("heading","")
-                pdf.set_font("Helvetica", "B", 11); pdf.set_x(20); pdf.cell(0, 7, str(h).upper()); pdf.ln(6)
+                pdf.set_font("Helvetica", "B", 11); pdf.set_x(20); pdf.cell(0, 7, self.sanitize_fpdf(h).upper()); pdf.ln(6)
                 lines = sek.get("lines", [])
                 if isinstance(lines, list):
                     for sl in lines:
-                        pdf.set_font("Helvetica", "", 11); pdf.set_x(20); pdf.multi_cell(170, 6, str(sl), align="J"); pdf.ln(2)
+                        pdf.set_font("Helvetica", "", 11); pdf.set_x(20); pdf.multi_cell(170, 6, self.sanitize_fpdf(sl), align="J"); pdf.ln(2)
 
         raw_gambar = cfg.get("gambar")
         kapsyen_list = cfg.get("kapsyen_gambar")
@@ -504,14 +550,14 @@ JSON output TEPAT:
                     kapsyen = "Imej sokongan."
                     if isinstance(kapsyen_list, list) and count < len(kapsyen_list):
                         kapsyen = str(kapsyen_list[count])
-                    pdf.multi_cell(170, 5, f"Rajah {count+1}: {kapsyen}", align="C"); pdf.ln(10)
+                    pdf.multi_cell(170, 5, self.sanitize_fpdf(f"Rajah {count+1}: {kapsyen}"), align="C"); pdf.ln(10)
                     count += 1
 
-        pdf.ln(5); pdf.set_font("Helvetica", "", 11); pdf.set_x(20); pdf.multi_cell(170, 6, str(data.get("closing", "Terima kasih.")), align="J")
+        pdf.ln(5); pdf.set_font("Helvetica", "", 11); pdf.set_x(20); pdf.multi_cell(170, 6, self.sanitize_fpdf(data.get("closing", "Terima kasih.")), align="J")
         pdf.ln(5); pdf.set_x(20); pdf.cell(0, 6, "Sekian,"); pdf.ln(10)
         pdf.set_font("Helvetica", "B", 11); pdf.set_x(20); pdf.cell(0, 7, '"BERKHIDMAT UNTUK NEGARA"'); pdf.ln(15)
-        pdf.set_font("Helvetica", "I", 13); pdf.set_x(20); pdf.cell(0, 7, str(nama_pengirim)); pdf.ln(7)
-        pdf.set_font("Helvetica", "", 11); pdf.set_x(20); pdf.cell(0, 6, str(jawatan_pengirim))
+        pdf.set_font("Helvetica", "I", 13); pdf.set_x(20); pdf.cell(0, 7, self.sanitize_fpdf(nama_pengirim)); pdf.ln(7)
+        pdf.set_font("Helvetica", "", 11); pdf.set_x(20); pdf.cell(0, 6, self.sanitize_fpdf(jawatan_pengirim))
         pdf.output(path)
 
     def _bina_csv(self, sektor: str, nombor_kes: str, path: str, nama_pengirim: str, jawatan_pengirim: str):

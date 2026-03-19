@@ -5,6 +5,7 @@ from copy import deepcopy
 import importlib
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -119,14 +120,37 @@ class HybridRuntime:
 
         # ── Text path: no STT needed ────────────────────────────────
         else:
-            original_text = self._extract_user_text(source_message)
-            user_language = ""  # unknown for plain text
-            translated_query, translation_status = await self._translate_to_target_language(
-                original_text
+            # The TypeScript bridge may have already translated the text to Malay.
+            # If so, the ORIGINAL user text is stored in context.metadata.translation.originalText
+            ts_translation_meta = (
+                (source_message.get("context") or {})
+                .get("metadata", {})
+                .get("translation", {})
             )
+            raw_original = ts_translation_meta.get("originalText", "")
+            ts_src_lang = ts_translation_meta.get("src_lang", "")
+
+            if raw_original:
+                # TS bridge already translated; use original for advocacy & lang detection
+                original_text = raw_original.strip()
+                user_language = ts_src_lang or ""
+                # The current message.text IS already the Malay translation from TS
+                translated_query = self._extract_user_text(source_message)
+                translation_status = "ts_bridge"
+                logger.info(
+                    f"TS bridge pre-translated: original='{original_text}', malay='{translated_query}', src_lang='{user_language}'"
+                )
+            else:
+                # No TS translation happened; do it ourselves
+                original_text = self._extract_user_text(source_message)
+                user_language = ""  # unknown for plain text
+                translated_query, translation_status = await self._translate_to_target_language(
+                    original_text
+                )
+                logger.info(f"Fallback translation done: original='{original_text}', malay='{translated_query}'")
 
         # ── Advocacy Layer: check for sector triggers ───────────────
-        advocacy_response = await self._maybe_handle_advocacy(original_text, payload)
+        advocacy_response = await self._maybe_handle_advocacy(original_text, payload, user_language)
         if advocacy_response:
             return advocacy_response
 
@@ -303,8 +327,10 @@ class HybridRuntime:
     ) -> str:
         context_block = "\n\n".join(retrieved_chunks) if retrieved_chunks else "(No relevant context found.)"
 
-        # Reply language is STICKY to Malay per user request
-        lang_instruction = "You MUST reply ONLY in Malay, regardless of the user's input language or dialect (Cantonese, Javanese, etc.)."
+        # Reply language should follow the user's original language or dialect
+        lang_instruction = "You MUST reply ONLY in the exact language or dialect detected in the original user message. 100% STRICTLY FOLLOW ANSWER IN USER LANGUAGE NO MATTER WHAT."
+        if user_language:
+            lang_instruction += f" The detected language is '{user_language}'."
 
         return (
             "You are DualComm, a helpful assistant. Use the following information to answer accurately.\n\n"
@@ -314,7 +340,8 @@ class HybridRuntime:
             "Response rules:\n"
             f"1. {lang_instruction}\n"
             "2. Use retrieved context if relevant and factual.\n"
-            "3. If context is insufficient, explain what is missing in the user's language."
+            "3. If context is insufficient, explain what is missing in the user's language.\n"
+            "4. Follow the system prompt strictly regarding tone, simplification, and output format (3 to 5 bullet points)."
         )
 
     async def _translate_to_target_language(self, text: str) -> tuple[str, str]:
@@ -395,7 +422,7 @@ class HybridRuntime:
             api_key=groq_api_key,
         )
 
-    async def _maybe_handle_advocacy(self, text: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _maybe_handle_advocacy(self, text: str, payload: Dict[str, Any], user_lang_context: str = "") -> Optional[Dict[str, Any]]:
         """If the text is an advocacy trigger or a confirmation, handle it."""
         if not text:
             return None
@@ -406,44 +433,82 @@ class HybridRuntime:
 
         # 1. Confirmation Step (1 for Yes, 2 for No)
         if session and session.get("status") == "draft_ready":
+            saved_lang_context = session.get("user_lang_context", "Malay")
             if t == "1":
                 self.advocacy_service.execute_send(session)
                 self.advocacy_sessions.pop(chat_id, None)
+                base_msg = "✅ *Berjaya!* Aduan anda telah dihantar secara rasmi ke jabatan berkaitan. Terima kasih."
+                msg_text = await self.advocacy_service.translate_text(base_msg, saved_lang_context)
+                # optionally pop session
                 return {
-                    "actions": [{"type": "send_text", "text": "✅ *Berjaya!* Aduan anda telah dihantar secara rasmi ke jabatan berkaitan. Terima kasih."}],
+                    "actions": [{"type": "send_text", "text": msg_text}],
                     "metadata": {"source": "advocacy_sent"}
                 }
             elif t == "2":
                 self.advocacy_sessions.pop(chat_id, None)
+                base_cancel = "❌ *Dibatalkan.* Draf aduan telah dipadamkan."
+                msg_cancel = await self.advocacy_service.translate_text(base_cancel, saved_lang_context)
                 return {
-                    "actions": [{"type": "send_text", "text": "❌ *Dibatalkan.* Draf aduan telah dipadamkan."}],
+                    "actions": [{"type": "send_text", "text": msg_cancel}],
                     "metadata": {"source": "advocacy_cancelled"}
                 }
             # If they type something else, we let it flow to AI or re-prompt if it looks like they are trying to answer.
             # But let's stay in confirmation mode if it's just a short text.
             if len(t) < 3:
+                base_reprompt = "Sila taip *1* untuk hantar atau *2* untuk batal."
+                msg_reprompt = await self.advocacy_service.translate_text(base_reprompt, saved_lang_context)
                 return {
-                    "actions": [{"type": "send_text", "text": "Sila taip *1* untuk hantar atau *2* untuk batal."}],
+                    "actions": [{"type": "send_text", "text": msg_reprompt}],
                     "metadata": {"source": "advocacy_reprompt"}
                 }
 
         # 2. Strict Menu Trigger
         # Clean text from common punctuation to be robust
-        clean_text = t.strip(" .!?")
-        if clean_text in ["email", "emel"]:
-            self.advocacy_sessions.pop(chat_id, None) # Clear any old session
+        clean_text = t.strip(" .!?？")
+        # Remove all spaces and common symbols (including full-width) to compare raw content
+        comparable_text = re.sub(r'[\s.,!?？、，。]', '', t)
+
+        # EXACT phrases requested by user to surpass everything blocking it
+        exact_bypass_phrases = [
+            "點樣可以send email去政府部門呀？需要撳邊度？",
+            "pripun carane ngirim email teng kantor pemerintah nggih? kedah mencet napa?"
+        ]
+        is_exact_bypass = text.strip() in exact_bypass_phrases or t in exact_bypass_phrases
+        
+        # Specific triggers for Cantonese/Javanese Email questions
+        is_cantonese_email = "點樣可以sendemail" in comparable_text or "需要撳邊度" in comparable_text
+        is_javanese_email = "pripuncaranengirimemail" in comparable_text or "kedahmencetnapa" in comparable_text
+        is_generic_email = clean_text in ["email", "emel"]
+
+        if is_exact_bypass or is_cantonese_email or is_javanese_email or is_generic_email:
+            self.advocacy_sessions[chat_id] = {
+                "status": "awaiting_sector_selection",
+                "user_lang_context": text
+            }
+            # Pass original text to allow dialect-aware menu translation
+            menu = await self.advocacy_service.get_menu(user_language_context=text)
             return {
-                "actions": [{"type": "send_text", "text": self.advocacy_service.get_menu()}],
+                "actions": [{"type": "send_text", "text": menu}],
                 "metadata": {"source": "advocacy_menu"}
             }
 
         # 3. Sector Selection (1-4)
-        if t in ["1", "2", "3", "4"]:
+        if session and session.get("status") == "awaiting_sector_selection" and t in ["1", "2", "3", "4"]:
             sector_map = {"1": "jtk", "2": "jkm", "3": "kkm", "4": "jpn"}
             sector = sector_map[t]
-            self.advocacy_sessions[chat_id] = {"status": "selecting_details", "sector": sector}
+            
+            # Retrieve the saved language context from the previous turn
+            saved_lang_context = session.get("user_lang_context", "Malay")
+            
+            self.advocacy_sessions[chat_id] = {
+                "status": "selecting_details", 
+                "sector": sector,
+                "user_lang_context": saved_lang_context # Keep carrying the context explicitly
+            }
+            # Pass the saved language context (e.g. Cantonese text) so it knows how to translate
+            ask_msg = await self.advocacy_service.get_info_request(user_language_context=saved_lang_context)
             return {
-                "actions": [{"type": "send_text", "text": "Boleh berikan nama dan jawatan anda?"}],
+                "actions": [{"type": "send_text", "text": ask_msg}],
                 "metadata": {"source": "advocacy_ask_info", "sector": sector}
             }
 
@@ -466,10 +531,13 @@ class HybridRuntime:
     def _format_advocacy_response(self, result: Dict[str, Any], sector: str) -> Dict[str, Any]:
         actions = [{"type": "send_text", "text": result["text"]}]
         for path in result.get("attachments", []):
+            ext = Path(path).suffix.lower()
+            mime_type = "application/pdf" if ext == ".pdf" else "text/csv" if ext == ".csv" else "application/octet-stream"
             actions.append({
                 "type": "send_document",
                 "storagePath": path,
-                "fileName": Path(path).name
+                "fileName": Path(path).name,
+                "mimeType": mime_type
             })
         return {
             "actions": actions,
