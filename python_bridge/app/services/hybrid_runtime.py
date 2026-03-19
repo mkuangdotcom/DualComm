@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 import importlib
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.services.langchain_runtime import LangChainRuntime
 from app.services.llamaindex_runtime import LlamaIndexRuntime
@@ -13,10 +14,14 @@ from app.services.stt_service import STTService
 from app.services.advocacy_service import AdvocacyService
 from app.services.utils import parse_model_spec
 from app.settings import get_settings
+from rag.embedder import process_user_image, process_user_pdf
 
 logger = logging.getLogger(__name__)
 
 _VOICE_TYPES = {"voice_note", "audio"}
+_IMAGE_TYPES = {"image"}
+_DOCUMENT_TYPES = {"pdf", "document"}
+_MEDIA_TYPES = _IMAGE_TYPES | _DOCUMENT_TYPES
 
 
 class HybridRuntime:
@@ -57,6 +62,9 @@ class HybridRuntime:
 
     async def handle_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         source_message = payload.get("message", {}) or {}
+        message_type = (source_message.get("messageType") or "").lower()
+
+        media_result: Optional[Dict[str, Any]] = None
 
         # ── Voice path: parallel transcribe + translate ──────────────
         stt_combined = await self._maybe_transcribe_audio(source_message)
@@ -90,6 +98,25 @@ class HybridRuntime:
                 len(translated_query),
             )
 
+        # ── Media path: image / PDF / document ───────────────────────
+        elif message_type in _MEDIA_TYPES:
+            media_result = await self._maybe_process_media(source_message)
+
+            # Use caption as original text
+            original_text = self._extract_user_text(source_message)
+            user_language = ""
+            translated_query, translation_status = await self._translate_to_target_language(
+                original_text
+            )
+
+            logger.info(
+                "Media processing done: type=%s, status=%s, chunks=%d, caption=%d chars",
+                message_type,
+                media_result.get("status", "unknown") if media_result else "none",
+                len(media_result.get("chunks", [])) if media_result else 0,
+                len(original_text),
+            )
+
         # ── Text path: no STT needed ────────────────────────────────
         else:
             original_text = self._extract_user_text(source_message)
@@ -104,11 +131,15 @@ class HybridRuntime:
             return advocacy_response
 
         # ── RAG retrieval (Malay query → Malay docs) ────────────────
-        retrieval = await self.rag_runtime.retrieve_context(
-            translated_query,
-            top_k=self.rag_top_k,
-        )
-        context_chunks = retrieval.get("chunks", [])
+        if media_result and media_result.get("status") in ("ok", "no_match"):
+            context_chunks = self._format_raw_chunks(media_result.get("chunks", []))
+            retrieval = {"status": media_result["status"], "error": media_result.get("error")}
+        else:
+            retrieval = await self.rag_runtime.retrieve_context(
+                translated_query,
+                top_k=self.rag_top_k,
+            )
+            context_chunks = retrieval.get("chunks", [])
 
         # ── Compose agent input ─────────────────────────────────────
         agent_input = self._compose_agent_input(
@@ -143,10 +174,75 @@ class HybridRuntime:
                 "rag_top_k": self.rag_top_k,
                 "rag_score_threshold": self.rag_runtime.score_threshold,
                 "rag_category": self.rag_runtime.category,
+                "media_processing": media_result["status"] if media_result else "skipped",
+                "media_type": message_type if media_result else None,
             }
         )
         result["metadata"] = metadata
         return result
+
+    # ------------------------------------------------------------------
+    # Media helpers (image / PDF / document)
+    # ------------------------------------------------------------------
+
+    async def _maybe_process_media(
+        self, message: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """If the message is an image/PDF/document, process via embedder."""
+        message_type = (message.get("messageType") or "").lower()
+        if message_type not in _MEDIA_TYPES:
+            return None
+
+        media_list = message.get("media") or []
+        if not media_list:
+            return {"status": "error", "chunks": [], "error": "No media"}
+
+        storage_path = media_list[0].get("storagePath")
+        if not storage_path:
+            return {"status": "error", "chunks": [], "error": "No storagePath"}
+
+        # Resolve path relative to project root
+        resolved = Path(storage_path)
+        if not resolved.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent.parent.parent
+            resolved = project_root / storage_path
+
+        if not resolved.exists():
+            return {"status": "error", "chunks": [], "error": f"File not found: {resolved}"}
+
+        try:
+            if message_type in _IMAGE_TYPES:
+                result = await asyncio.to_thread(process_user_image, str(resolved))
+            else:
+                result = await asyncio.to_thread(process_user_pdf, str(resolved))
+            return result
+        except Exception as exc:
+            logger.exception("Media processing failed for %s", resolved)
+            return {"status": "error", "chunks": [], "error": str(exc)}
+
+    @staticmethod
+    def _format_raw_chunks(raw_chunks: List[dict]) -> List[str]:
+        """Convert embedder chunk dicts to formatted strings."""
+        plain_chunks: List[str] = []
+        for chunk in raw_chunks:
+            text = chunk.get("text", "").strip()
+            source = chunk.get("source", "")
+            category = chunk.get("category", "")
+            score = chunk.get("score", "")
+
+            parts = [text]
+            tags = []
+            if source:
+                tags.append(f"source: {source}")
+            if category:
+                tags.append(f"category: {category}")
+            if score:
+                tags.append(f"score: {score}")
+            if tags:
+                parts.append(f"[{', '.join(tags)}]")
+
+            plain_chunks.append("\n".join(parts))
+        return plain_chunks
 
     # ------------------------------------------------------------------
     # STT helpers
