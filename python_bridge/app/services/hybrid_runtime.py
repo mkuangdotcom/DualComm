@@ -103,12 +103,26 @@ class HybridRuntime:
         elif message_type in _MEDIA_TYPES:
             media_result = await self._maybe_process_media(source_message)
 
-            # Use caption as original text
-            original_text = self._extract_user_text(source_message)
-            user_language = ""
-            translated_query, translation_status = await self._translate_to_target_language(
-                original_text
+            # Read TS bridge translation metadata for the caption
+            ts_media_meta = (
+                (source_message.get("context") or {})
+                .get("metadata", {})
+                .get("translation", {})
             )
+            raw_original_caption = ts_media_meta.get("originalCaption", "")
+            ts_media_src_lang = ts_media_meta.get("src_lang", "")
+
+            if raw_original_caption:
+                original_text = raw_original_caption.strip()
+                user_language = ts_media_src_lang or ""
+                translated_query = self._extract_user_text(source_message)
+                translation_status = "ts_bridge"
+            else:
+                original_text = self._extract_user_text(source_message)
+                user_language = ""
+                translated_query, translation_status = await self._translate_to_target_language(
+                    original_text
+                )
 
             logger.info(
                 "Media processing done: type=%s, status=%s, chunks=%d, caption=%d chars",
