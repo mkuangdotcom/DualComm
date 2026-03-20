@@ -6,7 +6,7 @@ from typing import Literal, Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-AgentBackend = Literal["hybrid"]
+AgentBackend = Literal["mock", "langchain", "llamaindex", "hybrid"]
 
 
 class Settings(BaseSettings):
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     )
 
     agent_backend: AgentBackend = Field(
-        default="hybrid",
+        default="mock",
         alias="AGENT_BACKEND",
     )
 
@@ -145,6 +145,15 @@ class Settings(BaseSettings):
             return False
 
         return provided_api_key == self.agent_api_key
+
+    def is_mock_backend(self) -> bool:
+        return self.agent_backend == "mock"
+
+    def is_langchain_backend(self) -> bool:
+        return self.agent_backend == "langchain"
+
+    def is_llamaindex_backend(self) -> bool:
+        return self.agent_backend == "llamaindex"
 
     def is_hybrid_backend(self) -> bool:
         return self.agent_backend == "hybrid"

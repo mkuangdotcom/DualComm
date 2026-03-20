@@ -6,47 +6,71 @@ from app.services.base import AgentRuntime
 from app.services.hybrid_runtime import HybridRuntime
 from app.services.langchain_runtime import LangChainRuntime
 from app.services.llamaindex_runtime import LlamaIndexRuntime
+from app.services.mock_runtime import MockRuntime
 from app.settings import get_settings
 
 
 def create_runtime_backend() -> AgentRuntime:
     """
-    Create the hybrid runtime backend.
+    Create the active runtime backend based on environment configuration.
 
-    Only `AGENT_BACKEND=hybrid` is supported.
+    Supported values for `AGENT_BACKEND`:
+    - `mock`
+    - `langchain`
+    - `llamaindex`
+    - `hybrid`
+
+    Unknown values fall back to the mock runtime so the bridge remains usable.
     """
     settings = get_settings()
     backend = settings.agent_backend.strip().lower()
 
-    if backend != "hybrid":
-        raise ValueError("Only AGENT_BACKEND=hybrid is supported")
+    if backend == "langchain":
+        return LangChainRuntime(
+            model_name=settings.langchain_model,
+            system_prompt=settings.default_system_prompt,
+            timeout_seconds=settings.langchain_timeout_seconds,
+        )
 
-    hybrid_score_threshold = (
-        settings.hybrid_rag_score_threshold
-        if settings.hybrid_rag_score_threshold is not None
-        else settings.llamaindex_score_threshold
-    )
-    hybrid_category = settings.hybrid_rag_category or settings.llamaindex_category
+    if backend == "llamaindex":
+        return LlamaIndexRuntime(
+            model_name=settings.llamaindex_model,
+            system_prompt=settings.llamaindex_system_prompt or settings.default_system_prompt,
+            timeout_seconds=settings.llamaindex_timeout_seconds,
+            rag_top_k=settings.llamaindex_top_k,
+            score_threshold=settings.llamaindex_score_threshold,
+            category=settings.llamaindex_category,
+        )
 
-    langchain_runtime = LangChainRuntime(
-        model_name=settings.langchain_model,
-        system_prompt=settings.default_system_prompt,
-        timeout_seconds=settings.langchain_timeout_seconds,
-    )
-    llamaindex_runtime = LlamaIndexRuntime(
-        model_name=settings.llamaindex_model,
-        system_prompt=settings.llamaindex_system_prompt or settings.default_system_prompt,
-        timeout_seconds=settings.llamaindex_timeout_seconds,
-        rag_top_k=settings.hybrid_rag_top_k,
-        score_threshold=hybrid_score_threshold,
-        category=hybrid_category,
-    )
-    return HybridRuntime(
-        agent_runtime=langchain_runtime,
-        rag_runtime=llamaindex_runtime,
-        target_language=settings.hybrid_rag_language,
-        rag_top_k=settings.hybrid_rag_top_k,
-    )
+    if backend == "hybrid":
+        hybrid_score_threshold = (
+            settings.hybrid_rag_score_threshold
+            if settings.hybrid_rag_score_threshold is not None
+            else settings.llamaindex_score_threshold
+        )
+        hybrid_category = settings.hybrid_rag_category or settings.llamaindex_category
+
+        langchain_runtime = LangChainRuntime(
+            model_name=settings.langchain_model,
+            system_prompt=settings.default_system_prompt,
+            timeout_seconds=settings.langchain_timeout_seconds,
+        )
+        llamaindex_runtime = LlamaIndexRuntime(
+            model_name=settings.llamaindex_model,
+            system_prompt=settings.llamaindex_system_prompt or settings.default_system_prompt,
+            timeout_seconds=settings.llamaindex_timeout_seconds,
+            rag_top_k=settings.hybrid_rag_top_k,
+            score_threshold=hybrid_score_threshold,
+            category=hybrid_category,
+        )
+        return HybridRuntime(
+            agent_runtime=langchain_runtime,
+            rag_runtime=llamaindex_runtime,
+            target_language=settings.hybrid_rag_language,
+            rag_top_k=settings.hybrid_rag_top_k,
+        )
+
+    return MockRuntime()
 
 
 @lru_cache(maxsize=1)

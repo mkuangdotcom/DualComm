@@ -1,7 +1,7 @@
 import "dotenv/config";
 
 export type LLMProvider = "groq" | "cohere";
-export type AgentMode = "python-http";
+export type AgentMode = "local-langchain" | "python-http";
 
 export interface AppConfig {
   llm: {
@@ -81,7 +81,7 @@ export const config: AppConfig = {
     },
   },
   agent: {
-    mode: "python-http",
+    mode: (process.env.AGENT_MODE || "local-langchain") as AgentMode,
     python: {
       baseUrl: process.env.PYTHON_AGENT_BASE_URL || "http://127.0.0.1:8000",
       timeoutMs: parseNumber(process.env.PYTHON_AGENT_TIMEOUT_MS, 30000),
@@ -120,11 +120,19 @@ export const config: AppConfig = {
 };
 
 export function validateConfig(): void {
-  if (process.env.AGENT_MODE && process.env.AGENT_MODE !== "python-http") {
-    throw new Error("Only AGENT_MODE=python-http is supported");
+  if (config.agent.mode === "local-langchain") {
+    const { provider } = config.llm;
+
+    if (provider === "groq" && !config.llm.groq.apiKey) {
+      throw new Error("GROQ_API_KEY is required when LLM_PROVIDER=groq");
+    }
+
+    if (provider === "cohere" && !config.llm.cohere.apiKey) {
+      throw new Error("COHERE_API_KEY is required when LLM_PROVIDER=cohere");
+    }
   }
 
-  if (!config.agent.python.baseUrl) {
+  if (config.agent.mode === "python-http" && !config.agent.python.baseUrl) {
     throw new Error(
       "PYTHON_AGENT_BASE_URL is required when AGENT_MODE=python-http",
     );
