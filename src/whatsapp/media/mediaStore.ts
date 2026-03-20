@@ -75,7 +75,9 @@ function inferExtension(mimeType?: string, fileName?: string): string {
     }
   }
 
-  switch (mimeType) {
+  const normalizedMimeType = normalizeMimeType(mimeType);
+
+  switch (normalizedMimeType) {
     case "image/jpeg":
       return ".jpg";
     case "image/png":
@@ -95,6 +97,14 @@ function inferExtension(mimeType?: string, fileName?: string): string {
     default:
       return "";
   }
+}
+
+function normalizeMimeType(mimeType?: string): string {
+  if (!mimeType) {
+    return "";
+  }
+
+  return mimeType.split(";")[0]?.trim().toLowerCase() || "";
 }
 
 function sanitizePathSegment(value: string): string {

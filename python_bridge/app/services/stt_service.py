@@ -76,7 +76,7 @@ class STTService:
             return await asyncio.to_thread(self._sync_transcribe, str(resolved))
         except Exception as exc:
             logger.exception("STT transcription failed for %s", resolved)
-            return self._error_result(str(exc))
+            return self._error_result(self._build_error_message(exc))
 
     async def translate(self, file_path: str) -> Dict[str, Any]:
         """Translate audio to English in a single API call.
@@ -95,7 +95,7 @@ class STTService:
             return await asyncio.to_thread(self._sync_translate, str(resolved))
         except Exception as exc:
             logger.exception("STT translation failed for %s", resolved)
-            return self._error_result(str(exc))
+            return self._error_result(self._build_error_message(exc))
 
     async def transcribe_and_translate(self, file_path: str) -> Dict[str, Any]:
         """Run transcription and translation **in parallel**.
@@ -205,3 +205,37 @@ class STTService:
             "status": "error",
             "error": message,
         }
+
+    @staticmethod
+    def _build_error_message(exc: Exception) -> str:
+        chain_messages = [
+            str(item).strip()
+            for item in STTService._iter_exception_chain(exc)
+            if str(item).strip()
+        ]
+        if not chain_messages:
+            return "Unknown STT error"
+
+        primary = chain_messages[0]
+        chain_text = " | ".join(chain_messages).lower()
+
+        if (
+            "winerror 10013" in chain_text
+            or "forbidden by its access permissions" in chain_text
+        ):
+            return (
+                f"{primary} (Network access denied: allow outbound HTTPS to "
+                "api.groq.com:443 for the Python runtime. Root cause includes WinError 10013.)"
+            )
+
+        return primary
+
+    @staticmethod
+    def _iter_exception_chain(exc: Exception):
+        visited: set[int] = set()
+        current: Optional[BaseException] = exc
+
+        while current is not None and id(current) not in visited:
+            visited.add(id(current))
+            yield current
+            current = current.__cause__ or current.__context__
