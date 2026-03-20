@@ -1,20 +1,66 @@
 # DualComm
 
-DualComm is a messaging bridge that connects WhatsApp and Telegram to a Python AI runtime.
-
-The project has two running parts:
-
-- TypeScript bridge (channel connectivity and message forwarding)
-- Python bridge (runtime logic: LangChain, LlamaIndex, Hybrid RAG)
+DualComm is a multilingual AI advocacy platform that empowers migrant workers to report workplace issues through WhatsApp and Telegram — in their native dialect. It ingests text, images, audio, and documents, translates across languages, retrieves relevant legal context via RAG, and auto-generates formal government complaint letters with supporting evidence.
 
 ## Architecture
 
-1. User sends message in WhatsApp or Telegram.
-2. Node bridge normalizes the message payload.
-3. If `AGENT_MODE=python-http`, Node forwards to Python `/messages`.
-4. Python backend selected by `AGENT_BACKEND` handles the message.
-5. Python returns outbound actions.
-6. Node sends action output back to user channel.
+```
+┌─────────────────┐    ┌──────────────────────┐    ┌─────────────────────────┐
+│   THE BRIDGE     │    │     INGESTION         │    │  TRANSLATION & BRAIN    │
+│                  │    │                       │    │                         │
+│  WhatsApp ──┐    │    │  Cohere/Qwen3 Vision  │    │  NLLB Translation       │
+│             ├──► │──►│  (image understanding) │──►│  (Cantonese/Javanese    │
+│  Telegram ──┘    │    │                       │    │   → Malay)              │
+│                  │    │  Groq Whisper-v3 STT   │    │                         │
+│  Node.js TS      │    │  (audio transcription) │    │  Qwen3 LLM (reasoning) │
+│  Bridge          │    │                       │    │                         │
+└─────────────────┘    └──────────────────────┘    └────────────┬────────────┘
+                                                                │
+                       ┌──────────────────────┐                 │
+                       │     THE VAULT         │◄───────────────┘
+                       │                       │
+                       │  LangChain + LlamaIndex│
+                       │  Qdrant Vector DB      │
+                       │  (legal knowledge RAG) │
+                       └───────────┬───────────┘
+                                   │
+                       ┌───────────▼───────────┐
+                       │     EXECUTION          │
+                       │                        │
+                       │  LangChain Agent       │
+                       │  AgentMail (MCP-Based) │
+                       │                        │
+                       │  Outputs:              │
+                       │  ├── PDF (formal letter)│
+                       │  ├── CSV (case report)  │
+                       │  └── Email (Resend API) │
+                       └────────────────────────┘
+```
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Messaging | WhatsApp (Baileys), Telegram (grammY) |
+| Bridge | Node.js + TypeScript |
+| Vision | Cohere embed-v4.0, Qwen3 |
+| Speech-to-Text | Groq Whisper-large-v3 |
+| Translation | NLLB-200 (facebook/nllb-200-distilled-600M via @xenova/transformers) |
+| LLM | Qwen3-32B via Groq |
+| RAG | LangChain + LlamaIndex + Qdrant Vector DB |
+| Agent | LangChain Agent + FastMCP |
+| Email | Resend API |
+| PDF/CSV | FPDF (with Unicode support) |
+| Runtime | Python FastAPI + Uvicorn |
+
+## Supported Languages
+
+| Input Language | Script | Output |
+|---------------|--------|--------|
+| Cantonese | yue_Hant | → Malay (zsm_Latn) |
+| Javanese | jav_Latn | → Malay (zsm_Latn) |
+| Malay | zsm_Latn | Native |
+| English | eng_Latn | Supported |
 
 ## Prerequisites
 
@@ -32,8 +78,6 @@ cd DualComm
 
 ## Environment Setup
 
-Create a root environment file:
-
 ```bash
 cp .env.example .env
 ```
@@ -44,13 +88,20 @@ On Windows PowerShell:
 Copy-Item .env.example .env
 ```
 
-Then edit `.env` with your real keys:
+Then edit `.env` with your keys:
 
-- `GROQ_API_KEY`
-- `COHERE_API_KEY`
-- `QDRANT_URL`
-- `QDRANT_API_KEY`
-- `TELEGRAM_BOT_TOKEN` (if Telegram is enabled)
+| Variable | Purpose |
+|----------|---------|
+| `GROQ_API_KEY` | Whisper STT + Qwen3 LLM |
+| `COHERE_API_KEY` | Multimodal vision embeddings |
+| `QDRANT_URL` | Vector DB endpoint |
+| `QDRANT_API_KEY` | Vector DB auth |
+| `TELEGRAM_BOT_TOKEN` | Telegram bridge |
+| `AGENTMAIL_API_KEY` | MCP-based agent mail |
+| `AGENT_BACKEND` | Runtime backend (`langchain`, `llamaindex`, `hybrid`) |
+| `LANGCHAIN_MODEL` | LLM model (default: `groq:qwen/qwen3-32b`) |
+| `TRANSLATION_ENABLED` | Enable NLLB translation (`true`/`false`) |
+| `TRANSLATION_NLLB_MODEL` | NLLB model ID |
 
 Do not commit `.env`.
 
@@ -64,33 +115,19 @@ npm install
 
 ### 2) Python dependencies
 
-Create virtual environment at the parent workspace level, then install:
-
-```powershell
-python -m venv ..\.venv
-..\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-On macOS/Linux:
+Create virtual environment, then install:
 
 ```bash
 python -m venv ../.venv
 ../.venv/bin/python -m pip install -r requirements.txt
 ```
 
-## Choose Runtime Modes
+On Windows PowerShell:
 
-In `.env`:
-
-- `AGENT_MODE=python-http` to use Python runtime (recommended)
-- `PYTHON_AGENT_BASE_URL=http://127.0.0.1:8000`
-
-Python backend selection:
-
-- `AGENT_BACKEND=mock`
-- `AGENT_BACKEND=langchain`
-- `AGENT_BACKEND=llamaindex`
-- `AGENT_BACKEND=hybrid` (translation + retrieval + generation)
+```powershell
+python -m venv ..\.venv
+..\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
 
 ## Run The Application
 
@@ -98,7 +135,11 @@ Use two terminals.
 
 ### Terminal A: Start Python bridge
 
-From repository root:
+```bash
+python -m uvicorn app.main:app --app-dir python_bridge --host 0.0.0.0 --port 8000 --reload
+```
+
+On Windows PowerShell:
 
 ```powershell
 Set-Location "C:\path\to\DualComm"
@@ -107,19 +148,13 @@ Set-Location "C:\path\to\DualComm"
 
 Health check:
 
-```powershell
-Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/health | Select-Object -ExpandProperty Content
+```bash
+curl http://127.0.0.1:8000/health
 ```
 
-Expected response:
-
-```json
-{"status":"ok"}
-```
+Expected: `{"status":"ok"}`
 
 ### Terminal B: Start Node bridge
-
-From repository root:
 
 ```bash
 npm run dev
@@ -132,62 +167,68 @@ Expected startup output includes:
 - Telegram bridge registered (if enabled)
 - WhatsApp QR output for linking device
 
-## Verify RAG Is Working
+## How It Works
 
-When `AGENT_BACKEND=hybrid` or `AGENT_BACKEND=llamaindex`, monitor metadata from Python `/messages` response.
+1. **User sends a message** (text, image, audio, or PDF) via WhatsApp or Telegram.
+2. **The Bridge** normalizes the payload and stages media files.
+3. **Ingestion** processes multimodal inputs — Cohere/Qwen3 Vision for images, Groq Whisper-large-v3 for audio transcription.
+4. **Translation** converts dialect input (Cantonese, Javanese) to Malay via NLLB-200.
+5. **The Vault** retrieves relevant legal context from Qdrant using LangChain + LlamaIndex hybrid RAG.
+6. **Qwen3 LLM** reasons over the translated input + retrieved context.
+7. **Execution** generates formal outputs — PDF complaint letters, CSV case reports, and emails sent to government departments (JTK, JKM, KKM, JPN) via Resend API.
 
-RAG active indicators:
+## RAG Pipeline
 
-- `runtime: "hybrid"` or `runtime: "llamaindex"`
-- `rag_status` or `llamaindex_status`
-- `rag_context_count` or `llamaindex_context_count`
+DualComm uses a **hybrid retrieval** architecture — combining LangChain and LlamaIndex in a single pipeline for higher recall and accuracy.
 
-Interpretation:
+**What's in the knowledge base:**
+- Malaysian labor laws and worker protection policies
+- Government department mandates (JTK, JKM, KKM, JPN)
+- Complaint filing procedures and legal precedents
 
-- `ok` + context count > 0: retrieval hit
-- `no_match` + context count 0: no relevant chunk found
-- `error`: retrieval call failed (check API keys/network/collection)
+**Why hybrid RAG:**
+- **LangChain** handles structured retrieval with chain-of-thought reasoning
+- **LlamaIndex** provides document-level indexing and semantic chunking
+- Both query **Qdrant Vector DB** (cloud-hosted) in parallel — best result wins
 
-## Common Issues
+**Multimodal retrieval:**
+- Text, images, and PDFs all pass through the same vector search pipeline
+- Images are embedded via **Cohere embed-v4.0** multimodal embeddings — no OCR-only fallback
+- PDFs are extracted with PyMuPDF and chunked for semantic search
 
-### Error: `ECONNREFUSED 127.0.0.1:8000`
+This means a worker can send a **photo of a payslip** or a **voice note in Cantonese**, and the system retrieves the relevant legal context to build their case automatically.
 
-Node cannot reach Python.
+## Benchmarks
 
-Check:
+We evaluated every model in the pipeline against real datasets — not just plugged in and hoped for the best.
 
-1. Python service is running.
-2. `.env` has matching `PYTHON_AGENT_BASE_URL` and Python port.
-3. Health endpoint returns `{"status":"ok"}`.
+### Speech-to-Text (STT)
 
-### Error: `Could not import module "app"`
+Evaluated on FLEURS test sets, 50 samples per dataset.
 
-Wrong uvicorn target. Use:
+| Language | Model | WER | BLEU | BERT F1 |
+|----------|-------|-----|------|---------|
+| **Cantonese** (yue_hant_hk) | Groq Whisper-large-v3 | **0.1449** | **74.63** | **0.9329** |
+| **Cantonese** (yue_hant_hk) | simonl0909-large-v2 | 0.1975 | 63.20 | 0.9069 |
+| **Javanese** (jv_id) | Wav2Vec2-jv-id-su | **0.5005** | **24.16** | **0.8446** |
+| **Javanese** (jv_id) | Groq Whisper-large-v3 | 0.7889 | 8.97 | 0.7526 |
 
-```bash
-python -m uvicorn app.main:app --app-dir python_bridge --host 0.0.0.0 --port 8000 --reload
-```
+> Groq Whisper wins on Cantonese but underperforms on Javanese — it tends to output Indonesian instead of authentic Javanese. We selected the best model per language accordingly.
 
-### Path errors on Windows with spaces
+### Text-to-Text Translation (TTT)
 
-Always quote paths:
+Evaluated on FLORES+ dataset, 10,000 samples. Model: NLLB-200-distilled-600M.
 
-```powershell
-Set-Location "C:\Users\name\Desktop\Research\Codex\V Hack new\DualComm"
-```
+| Language Pair | BLEU | COMET (wmt22-da) |
+|--------------|------|-------------------|
+| Cantonese → Malay | 10.70 | **0.8452** |
+| Javanese → Malay | 15.35 | **0.8262** |
+| Malay → Cantonese (NLLB) | 13.37 | 0.7782 |
+| Malay → Cantonese (Qwen 2.5 LLM) | 0.21 | 0.6627 |
 
-## Recommended Git Hygiene
+> NLLB-200 significantly outperforms general-purpose LLMs on low-resource dialect translation. COMET scores > 0.82 indicate strong human-judged quality.
 
-Do not commit runtime artifacts and secrets:
+## Roadmap
 
-- `.env`
-- `.venv/`, `venv/`
-- `node_modules/`
-- `auth_info_baileys/`
-- `media_staging/`
-- `__pycache__/`, `*.pyc`, `*.log`
+We currently support **Cantonese**, **Javanese**, **Malay**, and **English**. We are actively working towards expanding language support to cover more Southeast Asian migrant worker communities — including **Burmese**, **Vietnamese**, **Tagalog**, and **Bangla** — to broaden DualComm's reach across Malaysia's diverse workforce.
 
-## Additional Docs
-
-- `python_bridge/README.md` for Python service details
-- `docs/python-whatsapp-llm-bridge-plan.md` for implementation plan notes
