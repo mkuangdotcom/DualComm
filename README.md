@@ -2,6 +2,28 @@
 
 DualComm is a multilingual AI advocacy platform that empowers migrant workers to report workplace issues through WhatsApp and Telegram — in their native dialect. It ingests text, images, audio, and documents, translates across languages, retrieves relevant legal context via RAG, and auto-generates formal government complaint letters with supporting evidence.
 
+## Demo
+
+### Conversation Flow
+
+A migrant worker reports a workplace issue through WhatsApp — in Cantonese. DualComm translates, understands, and guides them through the complaint process.
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/d4ddddcb-8606-43b0-80a4-8d8bd041b8fc" width="270" />
+  <img src="https://github.com/user-attachments/assets/6e0cb101-367f-4ce3-9bf2-850de68069a7" width="270" />
+  <img src="https://github.com/user-attachments/assets/1eeabc4f-4395-4af2-a526-97e626078de7" width="270" />
+</p>
+
+### Advocacy Output
+
+Once the case is complete, DualComm auto-generates a formal complaint letter (Surat Rasmi), a CSV case report, and emails them directly to the relevant government department.
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/714d7a1e-dd61-4b8d-9f0e-96085389794c" width="270" />
+  <img src="https://github.com/user-attachments/assets/34c7d625-d133-4def-9c8d-58ba8183f733" width="400" />
+  <img src="https://github.com/user-attachments/assets/ee49198e-02a6-469c-a53a-9cd616661a1c" width="400" />
+</p>
+
 ## Architecture
 
 ```
