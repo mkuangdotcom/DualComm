@@ -6,8 +6,22 @@ from app.services.base import AgentRuntime
 from app.services.hybrid_runtime import HybridRuntime
 from app.services.langchain_runtime import LangChainRuntime
 from app.services.llamaindex_runtime import LlamaIndexRuntime
-from app.services.mock_runtime import MockRuntime
 from app.settings import get_settings
+
+try:
+    from app.services.mock_runtime import MockRuntime
+except ModuleNotFoundError:
+    class MockRuntime:
+        async def handle_message(self, payload: dict) -> dict:
+            return {
+                "actions": [
+                    {
+                        "type": "send_text",
+                        "text": "Python bridge is online. Mock runtime fallback is active.",
+                    }
+                ],
+                "metadata": {"runtime": "mock-fallback"},
+            }
 
 
 def create_runtime_backend() -> AgentRuntime:

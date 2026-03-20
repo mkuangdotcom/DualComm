@@ -1,6 +1,5 @@
 import { config } from '../config.js';
 import type { AgentRuntime } from '../core/runtime.js';
-import { LocalLangChainRuntime } from './localLangChainRuntime.js';
 import { PythonHttpRuntime } from './pythonHttpRuntime.js';
 
 export function createAgentRuntime(): AgentRuntime {
@@ -12,5 +11,7 @@ export function createAgentRuntime(): AgentRuntime {
     });
   }
 
-  return new LocalLangChainRuntime();
+  throw new Error(
+    'AGENT_MODE=local-langchain is not available in this build. Set AGENT_MODE=python-http.',
+  );
 }
