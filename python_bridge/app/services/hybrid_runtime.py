@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from app.services.langchain_runtime import LangChainRuntime
 from app.services.llamaindex_runtime import LlamaIndexRuntime
 from app.services.stt_service import STTService
-from app.services.advocacy_service import AdvocacyService
+from app.services.mcp_advocacy_service import MCPAdvocacyService
 from app.services.utils import parse_model_spec
 from app.settings import get_settings
 from rag.embedder import process_user_image, process_user_pdf
@@ -56,7 +56,7 @@ class HybridRuntime:
         self.stt_service = STTService(
             api_key=os.getenv("GROQ_API_KEY") or get_settings().groq_api_key
         )
-        self.advocacy_service = AdvocacyService(
+        self.advocacy_service = MCPAdvocacyService(
             groq_api_key=os.getenv("GROQ_API_KEY") or get_settings().groq_api_key
         )
         self.advocacy_sessions: Dict[str, Any] = {}
@@ -514,7 +514,7 @@ class HybridRuntime:
         if session and session.get("status") == "draft_ready":
             saved_lang_context = session.get("user_lang_context", "Malay")
             if t == "1":
-                self.advocacy_service.execute_send(session)
+                await self.advocacy_service.execute_send(session)
                 self.advocacy_sessions.pop(chat_id, None)
                 base_msg = "✅ *Berjaya!* Aduan anda telah dihantar secara rasmi ke jabatan berkaitan. Terima kasih."
                 msg_text = await self.advocacy_service.translate_text(base_msg, saved_lang_context)

@@ -658,7 +658,7 @@ def hantar_emel(
 
     params = {
         "from": f"{nama_pengirim} <onboarding@resend.dev>",
-        "to": ["kv.kevin.official@gmail.com"],
+        "to": [emel_sasaran],
         "subject": subjek,
         "html": html_penuh,
         "attachments": [

@@ -14,13 +14,7 @@ async function main() {
   console.log("=".repeat(60));
   console.log(`  🤖 ${config.bot.name} — WhatsApp Hybrid Bridge`);
   console.log(`  Agent mode: ${config.agent.mode}`);
-  console.log(
-    `  Runtime: ${
-      config.agent.mode === "python-http"
-        ? config.agent.python.baseUrl
-        : `local-${config.llm.provider}`
-    }`,
-  );
+  console.log(`  Runtime: ${config.agent.python.baseUrl}`);
   console.log("=".repeat(60));
 
   try {
