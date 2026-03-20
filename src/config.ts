@@ -34,6 +34,13 @@ export interface AppConfig {
     botToken: string;
     mediaStagingDirectory: string;
   };
+  translation: {
+    enabled: boolean;
+    nllb: {
+      model: string;
+      targetLang: "zsm_Latn";
+    };
+  };
 }
 
 function parseNumber(value: string | undefined, fallback: number): number {
@@ -101,6 +108,14 @@ export const config: AppConfig = {
     botToken: process.env.TELEGRAM_BOT_TOKEN || "",
     mediaStagingDirectory:
       process.env.TELEGRAM_MEDIA_STAGING_DIR || "media_staging/telegram",
+  },
+  translation: {
+    enabled: parseBoolean(process.env.TRANSLATION_ENABLED, false),
+    nllb: {
+      model:
+        process.env.NLLB_MODEL || "facebook/nllb-200-distilled-600M",
+      targetLang: "zsm_Latn",
+    },
   },
 };
 

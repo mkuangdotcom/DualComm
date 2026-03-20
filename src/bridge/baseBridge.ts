@@ -1,5 +1,8 @@
 import type { AgentRuntime, OutboundAction } from '../core/runtime.js';
 import type { InboundMessage } from '../core/messages.js';
+import { config } from '../config.js';
+import { detect_source_lang } from '../translation/detectSourceLang.js';
+import { translate_to_malay } from '../translation/translateToMalay.js';
 
 export interface BridgeLogger {
   log: (...args: unknown[]) => void;
@@ -45,7 +48,7 @@ export abstract class BaseBridge<TRawMessage> {
    */
   public async processMessage(raw: TRawMessage): Promise<void> {
     try {
-      const inbound = await this.normalize(raw);
+      let inbound = await this.normalize(raw);
       if (!inbound) {
         return;
       }
@@ -55,6 +58,43 @@ export abstract class BaseBridge<TRawMessage> {
       );
 
       await this.onBeforeAgent(inbound);
+
+      if (config.translation.enabled) {
+        const originalText = (inbound.text || '').trim();
+        const originalCaption = (inbound.caption || '').trim();
+        const hasText = Boolean(originalText);
+        const hasCaption = Boolean(originalCaption);
+
+        if (hasText || hasCaption) {
+          const srcLang = detect_source_lang(hasText ? originalText : originalCaption);
+          const translatedText = hasText
+            ? await translate_to_malay(originalText, srcLang)
+            : '';
+          const translatedCaption = hasCaption
+            ? await translate_to_malay(originalCaption, srcLang)
+            : '';
+
+          inbound = {
+            ...inbound,
+            text: hasText ? (translatedText || originalText) : inbound.text,
+            caption: hasCaption ? (translatedCaption || originalCaption) : inbound.caption,
+            context: {
+              ...(inbound.context ?? {}),
+              metadata: {
+                ...((inbound.context?.metadata as Record<string, unknown> | undefined) ?? {}),
+                translation: {
+                  enabled: true,
+                  model: config.translation.nllb.model,
+                  src_lang: srcLang,
+                  tgt_lang: 'zsm_Latn',
+                  originalText: hasText ? originalText : undefined,
+                  originalCaption: hasCaption ? originalCaption : undefined,
+                },
+              },
+            },
+          };
+        }
+      }
 
       const response = await this.agentRuntime.handleMessage({
         message: inbound,

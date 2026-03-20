@@ -5,9 +5,15 @@ knowledge_base/raw_pdfs/
 .env
 .venv/
 venv/
+python/
+node_modules/
 __pycache__/
 *.pyc
 *.pyo
+
+# Session / Staging
+auth_info_baileys/
+media_staging/
 
 # Qdrant local storage
 qdrant_storage/
@@ -20,3 +26,7 @@ qdrant_storage/
 
 # Logs
 *.log
+
+.hf_cache/
+dist/
+node_modules/

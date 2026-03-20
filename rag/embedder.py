@@ -75,7 +75,12 @@ def process_user_image(
         co = _get_cohere()
 
         image_bytes = Path(image_path).read_bytes()
-        image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+        raw_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+
+        # Cohere embed-v4.0 requires a data URI, not raw base64
+        suffix = Path(image_path).suffix.lower().lstrip(".")
+        mime = "jpeg" if suffix in ("jpg", "jpeg") else suffix  # png, gif, webp, etc.
+        image_b64 = f"data:image/{mime};base64,{raw_b64}"
 
         # Cohere embed-v4.0 multimodal: embed the image directly
         response = co.embed(
