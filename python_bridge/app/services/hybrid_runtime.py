@@ -98,6 +98,11 @@ class HybridRuntime:
                 len(english_text),
                 len(translated_query),
             )
+        elif message_type in _VOICE_TYPES and stt_combined is not None:
+            return self._build_voice_stt_failure_response(
+                stt_combined=stt_combined,
+                message_type=message_type,
+            )
 
         # ── Media path: image / PDF / document ───────────────────────
         elif message_type in _MEDIA_TYPES:
@@ -317,6 +322,66 @@ class HybridRuntime:
             resolved = project_root / storage_path
 
         return await self.stt_service.transcribe_and_translate(str(resolved))
+
+    def _build_voice_stt_failure_response(
+        self,
+        *,
+        stt_combined: Dict[str, Any],
+        message_type: str,
+    ) -> Dict[str, Any]:
+        transcription_error = self._extract_stt_error(stt_combined.get("transcription"))
+        translation_error = self._extract_stt_error(stt_combined.get("translation"))
+        stt_error = transcription_error or translation_error or "unknown_stt_error"
+
+        logger.warning(
+            "Voice STT failed for type=%s: transcription_error=%s translation_error=%s",
+            message_type,
+            transcription_error,
+            translation_error,
+        )
+
+        return {
+            "actions": [
+                {
+                    "type": "send_text",
+                    "text": (
+                        "Maaf, saya tidak dapat memproses nota suara sekarang. "
+                        "Sila cuba semula atau hantarkan mesej teks."
+                    ),
+                }
+            ],
+            "metadata": {
+                "runtime": "hybrid",
+                "pipeline": "parallel_stt->translate_malay->rag->langchain",
+                "stt_status": stt_combined.get("status", "error"),
+                "stt_language": None,
+                "user_language": "",
+                "translation_target": self.target_language,
+                "translation_status": "skipped_stt_error",
+                "rag_status": "skipped_stt_error",
+                "rag_context_count": 0,
+                "rag_error": None,
+                "rag_top_k": self.rag_top_k,
+                "rag_score_threshold": self.rag_runtime.score_threshold,
+                "rag_category": self.rag_runtime.category,
+                "media_processing": "skipped_stt_error",
+                "media_type": message_type,
+                "stt_error": stt_error,
+                "stt_transcription_error": transcription_error,
+                "stt_translation_error": translation_error,
+            },
+        }
+
+    @staticmethod
+    def _extract_stt_error(result: Any) -> Optional[str]:
+        if not isinstance(result, dict):
+            return None
+
+        error = result.get("error")
+        if isinstance(error, str) and error.strip():
+            return error.strip()
+
+        return None
 
     @staticmethod
     def _extract_user_text(message: Dict[str, Any]) -> str:
@@ -557,3 +622,4 @@ class HybridRuntime:
             "actions": actions,
             "metadata": {"source": "advocacy_flow", "sector": sector}
         }
+
